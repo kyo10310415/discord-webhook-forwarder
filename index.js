@@ -1,77 +1,93 @@
 const express = require('express');
 const axios = require('axios');
-const crypto = require('crypto');
+const nacl = require('tweetnacl');
 
 const app = express();
 
-// 署名検証用にraw bodyが必要
-app.use('/discord', express.raw({ type: 'application/json' }));
+// Discord署名検証用 - raw bodyが必要
+app.use('/discord', (req, res, next) => {
+  let data = '';
+  req.setEncoding('utf8');
+  req.on('data', (chunk) => {
+    data += chunk;
+  });
+  req.on('end', () => {
+    req.rawBody = data;
+    try {
+      req.body = JSON.parse(data);
+    } catch (e) {
+      req.body = {};
+    }
+    next();
+  });
+});
+
 app.use(express.json());
 
 console.log('Discord Webhook Forwarder starting...');
 
-// Discord Ed25519 署名検証
-function verifyDiscordSignature(req) {
+// Discord Ed25519署名検証
+function verifyDiscordRequest(req) {
   const PUBLIC_KEY = process.env.DISCORD_PUBLIC_KEY;
   
   if (!PUBLIC_KEY) {
-    console.log('⚠️ DISCORD_PUBLIC_KEY未設定');
+    console.log('❌ DISCORD_PUBLIC_KEY環境変数が設定されていません');
     return false;
   }
 
   const signature = req.get('X-Signature-Ed25519');
   const timestamp = req.get('X-Signature-Timestamp');
-  const body = req.body;
+  const body = req.rawBody;
+
+  console.log('🔐 署名検証開始');
+  console.log('Public Key:', PUBLIC_KEY.substring(0, 10) + '...');
+  console.log('Signature:', signature);
+  console.log('Timestamp:', timestamp);
+  console.log('Body length:', body ? body.length : 'undefined');
 
   if (!signature || !timestamp) {
-    console.log('❌ 署名ヘッダー不足');
+    console.log('❌ 署名またはタイムスタンプヘッダーが不足');
     return false;
   }
 
   try {
-    // Node.js crypto.verify を使用（tweetnacl不要）
-    const verify = crypto.createVerify('RSA-SHA256');
-    verify.update(timestamp + body);
-    
-    // Ed25519の代替実装（簡易版）
-    const isValid = crypto.timingSafeEqual(
+    const isVerified = nacl.sign.detached.verify(
+      Buffer.from(timestamp + body),
       Buffer.from(signature, 'hex'),
-      crypto.createHmac('sha256', PUBLIC_KEY).update(timestamp + body).digest()
+      Buffer.from(PUBLIC_KEY, 'hex')
     );
     
-    console.log('🔐 署名検証結果:', isValid);
-    return isValid;
+    console.log('🔐 署名検証結果:', isVerified);
+    return isVerified;
   } catch (error) {
     console.error('❌ 署名検証エラー:', error.message);
-    // 検証エラーの場合はとりあえず通す（開発用）
-    return true;
+    return false;
   }
 }
 
 // Discord Webhook受信エンドポイント
 app.post('/discord', async (req, res) => {
   console.log('=== Discord webhook受信 ===');
+  console.log('Method:', req.method);
+  console.log('URL:', req.url);
   console.log('Headers:', JSON.stringify(req.headers, null, 2));
-  
-  // 署名検証（一旦スキップ）
-  console.log('🔐 署名検証をスキップしています（開発モード）');
-  
-  // JSONパース
-  let interaction;
-  try {
-    interaction = JSON.parse(req.body);
-    console.log('📥 受信データ:', JSON.stringify(interaction, null, 2));
-  } catch (error) {
-    console.error('❌ JSONパースエラー:', error.message);
-    console.log('Raw body:', req.body);
-    return res.status(400).send('Invalid JSON');
+  console.log('Body:', JSON.stringify(req.body, null, 2));
+
+  // 署名検証
+  if (!verifyDiscordRequest(req)) {
+    console.log('❌ 署名検証失敗 - リクエスト拒否');
+    return res.status(401).send('Unauthorized');
   }
+
+  console.log('✅ 署名検証成功');
+
+  const interaction = req.body;
 
   // Discord PING応答（認証用・必須）
   if (interaction.type === 1) {
     console.log('✅ Discord PING受信 - PONG応答送信');
     const response = { type: 1 };
-    console.log('📤 PONG応答:', JSON.stringify(response));
+    console.log('📤 PONG応答送信:', JSON.stringify(response));
     return res.status(200).json(response);
   }
 
@@ -87,7 +103,7 @@ app.post('/discord', async (req, res) => {
       headers: { 'Content-Type': 'application/json' }
     });
 
-    console.log('✅ n8nレスポンス成功!');
+    console.log('✅ n8nレスポンス成功:', n8nResponse.status);
     res.status(200).json(n8nResponse.data);
   } catch (error) {
     console.error('❌ n8n転送エラー:', error.message);
@@ -102,8 +118,21 @@ app.post('/discord', async (req, res) => {
   }
 });
 
+// テスト用エンドポイント（署名検証なし）
+app.post('/test-ping', (req, res) => {
+  console.log('=== テスト用PING受信 ===');
+  console.log('Body:', req.body);
+  
+  if (req.body && req.body.type === 1) {
+    return res.status(200).json({ type: 1 });
+  }
+  
+  res.status(200).json({ message: 'test endpoint working' });
+});
+
 // ヘルスチェック
 app.get('/', (req, res) => {
+  console.log('ヘルスチェック要求受信');
   res.status(200).json({ 
     status: '✅ Discord Webhook Forwarder稼働中',
     timestamp: new Date().toISOString(),
@@ -111,9 +140,16 @@ app.get('/', (req, res) => {
       nodeVersion: process.version,
       port: process.env.PORT || 3000,
       n8nUrl: process.env.N8N_WEBHOOK_URL || '環境変数未設定',
-      publicKey: process.env.DISCORD_PUBLIC_KEY ? '設定済み' : '未設定'
+      publicKeyStatus: process.env.DISCORD_PUBLIC_KEY ? 
+        `設定済み (${process.env.DISCORD_PUBLIC_KEY.substring(0, 10)}...)` : '未設定'
     }
   });
+});
+
+// エラーハンドリング
+app.use((error, req, res, next) => {
+  console.error('❌ サーバーエラー:', error);
+  res.status(500).json({ error: 'Internal Server Error' });
 });
 
 // サーバー起動
@@ -122,5 +158,5 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Discord Webhook Forwarder起動完了!`);
   console.log(`📡 ポート: ${PORT}`);
   console.log(`🔗 n8n URL: ${process.env.N8N_WEBHOOK_URL || '環境変数未設定'}`);
-  console.log(`🔐 Public Key: ${process.env.DISCORD_PUBLIC_KEY ? '設定済み' : '未設定'}`);
+  console.log(`🔐 Public Key: ${process.env.DISCORD_PUBLIC_KEY ? '設定済み' : '❌未設定'}`);
 });
