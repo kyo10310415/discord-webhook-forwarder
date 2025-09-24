@@ -7,12 +7,26 @@ app.use(express.json({ limit: '10mb' }));
 // 起動確認ログ
 console.log('=== Discord Webhook Forwarder 起動開始 ===');
 
-// Discord Webhook受信エンドポイント（署名検証なし）
+// Discord Webhook受信エンドポイント（署名検証対応）
 app.post('/discord', async (req, res) => {
   console.log('=== Discord webhook受信 ===');
   console.log('Method:', req.method);
   console.log('Headers:', JSON.stringify(req.headers, null, 2));
   console.log('Body:', JSON.stringify(req.body, null, 2));
+
+  // Discord署名ヘッダーの確認
+  const signature = req.get('X-Signature-Ed25519');
+  const timestamp = req.get('X-Signature-Timestamp');
+  
+  console.log('🔐 Discord署名ヘッダー確認:');
+  console.log('- Signature:', signature ? `あり (${signature.substring(0, 10)}...)` : 'なし');
+  console.log('- Timestamp:', timestamp || 'なし');
+  
+  // 署名検証を一時的にスキップ（開発モード）
+  if (signature && timestamp) {
+    console.log('⚠️ Discord署名検証をスキップ（開発モード）');
+    console.log('⚠️ 本番環境では署名検証が必要です');
+  }
 
   const interaction = req.body;
 
@@ -54,6 +68,20 @@ app.post('/discord', async (req, res) => {
     console.log('❌ 無効なリクエスト:', interaction);
     res.status(400).json({ error: 'Invalid request' });
   }
+});
+
+// Discord認証専用テストエンドポイント
+app.post('/discord-test', async (req, res) => {
+  console.log('=== Discord TEST webhook受信 ===');
+  console.log('Headers:', JSON.stringify(req.headers, null, 2));
+  console.log('Body:', JSON.stringify(req.body, null, 2));
+  
+  if (req.body && req.body.type === 1) {
+    console.log('✅ TEST PING応答');
+    return res.status(200).json({ type: 1 });
+  }
+  
+  res.status(200).json({ message: 'discord-test endpoint working' });
 });
 
 // ヘルスチェック
