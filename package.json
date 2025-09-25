@@ -1,17 +1,15 @@
 {
   "name": "discord-webhook-forwarder",
   "version": "1.0.0",
-  "description": "Discord webhook forwarder to n8n for VTuber school",
+  "description": "Discord Webhook Forwarder with Mention Support",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-    "express": "^4.18.0",
+    "express": "^4.18.2",
     "axios": "^1.6.0",
-    "tweetnacl": "^1.0.3"
-  },
-  "engines": {
-    "node": "18.x"
+    "tweetnacl": "^1.0.3",
+    "discord.js": "^14.14.1"
   }
 }
