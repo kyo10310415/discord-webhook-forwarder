@@ -1,26 +1,9 @@
 const express = require('express');
 const axios = require('axios');
-const nacl = require('tweetnacl');
+const { validPublicKey, verifyDiscordSignature } = require('./signature');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-
-// Discord署名検証関数
-function verifyDiscordSignature(signature, timestamp, body, publicKey) {
-  try {
-    const timestampBuffer = Buffer.from(timestamp, 'utf8');
-    const bodyBuffer = Buffer.from(body);
-    const message = Buffer.concat([timestampBuffer, bodyBuffer]);
-    
-    const signatureBuffer = Buffer.from(signature, 'hex');
-    const publicKeyBuffer = Buffer.from(publicKey, 'hex');
-    
-    return nacl.sign.detached.verify(message, signatureBuffer, publicKeyBuffer);
-  } catch (error) {
-    console.error('署名検証エラー:', error);
-    return false;
-  }
-}
 
 // メンション検知のためのDiscord API呼び出し
 async function sendDiscordMessage(channelId, content, components = null) {
@@ -108,18 +91,17 @@ app.post('/discord', async (req, res) => {
   const timestamp = req.headers['x-signature-timestamp'];
   const publicKey = process.env.DISCORD_PUBLIC_KEY;
   
-  // 署名検証
-  if (publicKey) {
-    const isValid = verifyDiscordSignature(signature, timestamp, req.body, publicKey);
-    console.log('署名検証結果:', isValid);
-    if (!isValid) {
-      return res.status(401).json({ error: 'Invalid signature' });
-    }
+  if (!validPublicKey(publicKey)) return res.status(503).json({ error: 'Discord verification is not configured' });
+  if (!verifyDiscordSignature(signature, timestamp, req.body, publicKey)) {
+    return res.status(401).json({ error: 'Invalid signature' });
   }
-  
+
   let body;
   try {
     body = JSON.parse(req.body.toString());
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return res.status(400).json({ error: 'Invalid interaction' });
+    }
     console.log('リクエストタイプ:', body.type);
   } catch (error) {
     return res.status(400).json({ error: 'Invalid JSON' });
@@ -196,10 +178,12 @@ app.get('/', (req, res) => {
   });
 });
 
-app.listen(PORT, () => {
+if (require.main === module) app.listen(PORT, () => {
   console.log(`=== サーバー起動完了 ===`);
   console.log(`ポート: ${PORT}`);
   console.log(`時刻: ${new Date().toISOString()}`);
   console.log(`Discord Bot Token: ${process.env.DISCORD_BOT_TOKEN ? '設定済み' : '未設定'}`);
   console.log('======================');
 });
+
+module.exports = app;
